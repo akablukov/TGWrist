@@ -7,6 +7,8 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.media.AudioAttributes
+import android.media.RingtoneManager
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -24,6 +26,14 @@ import com.tgwrist.app.utils.isSamsungDevice
  * 仅负责展示"有人在呼叫你"通知，引导用户打开 App。
  *
  * 当用户真正接听（[CallForegroundService] 启动）后，本服务会被停止。
+ *
+ * 实现说明（两个通知）：
+ *  - [NOTIFICATION_ID]：前台服务自身的静默通知，附带 Wear OngoingActivity（绿标）。
+ *    Wear OS 会把带 OngoingActivity 的前台服务通知当作 "Ongoing Activity" 处理
+ *    并放进 NowBar，这类通知的 fullScreenIntent 会被忽略——所以这里不能挂来电提醒。
+ *  - [ALERT_NOTIFICATION_ID]：真正的来电提醒，独立发出：fullScreenIntent + 铃声 +
+ *    FLAG_INSISTENT。它不绑定前台服务，也不带 OngoingActivity，因而会按普通
+ *    高优先级通知处理，能够点亮屏幕并拉起通话页。
  */
 class IncomingCallNotificationService : Service() {
 
@@ -35,8 +45,15 @@ class IncomingCallNotificationService : Service() {
         const val EXTRA_TITLE  = "incoming_call_title"
         const val EXTRA_TEXT   = "incoming_call_text"
 
+        /** 前台服务通知（静默，带绿标） */
         const val NOTIFICATION_ID = 1003
-        const val CHANNEL_ID      = "tg_wear_incoming_call_channel"
+        /** 来电提醒通知（全屏 + 铃声） */
+        const val ALERT_NOTIFICATION_ID = 1004
+
+        /** 旧渠道 id，保留以便清理；新版本不再使用 */
+        const val CHANNEL_ID        = "tg_wear_incoming_call_channel"
+        const val FGS_CHANNEL_ID    = "tg_wear_incoming_call_fgs"
+        const val RING_CHANNEL_ID   = "tg_wear_incoming_call_ring"
 
         fun start(context: Context, title: String, text: String) {
             val intent = Intent(context, IncomingCallNotificationService::class.java).apply {
@@ -59,7 +76,7 @@ class IncomingCallNotificationService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        createNotificationChannel()
+        createNotificationChannels()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -82,52 +99,69 @@ class IncomingCallNotificationService : Service() {
     private fun ensureForeground(title: String, text: String) {
         if (isForegroundStarted) return
 
-        // 创建基础的 Builder
-        val builder = buildNotification(title, text)
-
-        // 在 build() 之前，一次性注入 Wear OS 绿标配置
-        val status = Status.Builder()
-            .addTemplate(title)
-            .build()
-        OngoingActivity.Builder(this, NOTIFICATION_ID, builder)
-            .setStaticIcon(if (isSamsungDevice()) R.drawable.ic_call_png else R.drawable.ic_call)
-            .setStatus(status)
-            .setTouchIntent(openAppPendingIntent())
-            .build()
-            .apply(this) // 将配置写入 builder
-
-        // 构建通知，并打上持续震动/响铃的标签 (FLAG_INSISTENT)
-        val notification = builder.build().apply {
-            this.flags = this.flags or Notification.FLAG_INSISTENT
-        }
-
-        // 一次性启动前台服务，同步出现绿标
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SHORT_SERVICE
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
-        }
-
-        Push.setIncomingCallServiceActive(this, true)
-        isForegroundStarted = true
-        Log.d(TAG, "Incoming call notification foreground started with insistent alerts")
-    }
-
-    private fun buildNotification(title: String, text: String): NotificationCompat.Builder =
-        NotificationCompat.Builder(this, CHANNEL_ID)
+        // 1) 前台服务通知：静默 + Wear 绿标（OngoingActivity）。不带 fullScreenIntent。
+        val fgsBuilder = NotificationCompat.Builder(this, FGS_CHANNEL_ID)
             .setContentTitle(title)
             .setContentText(text)
             .setSmallIcon(R.drawable.ic_call)
             .setContentIntent(openAppPendingIntent())
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setSilent(true)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+
+        val status = Status.Builder()
+            .addTemplate(title)
+            .build()
+        OngoingActivity.Builder(this, NOTIFICATION_ID, fgsBuilder)
+            .setStaticIcon(if (isSamsungDevice()) R.drawable.ic_call_png else R.drawable.ic_call)
+            .setStatus(status)
+            .setTouchIntent(openAppPendingIntent())
+            .build()
+            .apply(this)
+
+        val fgsNotification = fgsBuilder.build()
+
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(
+                NOTIFICATION_ID,
+                fgsNotification,
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SHORT_SERVICE
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, fgsNotification)
+        }
+
+        // 2) 来电提醒：独立通知，fullScreenIntent + 铃声 + FLAG_INSISTENT。
+        val alertNotification = NotificationCompat.Builder(this, RING_CHANNEL_ID)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setSmallIcon(R.drawable.ic_call)
+            .setContentIntent(openAppPendingIntent())
+            .setOngoing(true)
+            .setAutoCancel(false)
             .setOnlyAlertOnce(false)
             .setCategory(NotificationCompat.CATEGORY_CALL)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setFullScreenIntent(openAppPendingIntent(), true)
+            .build()
+            .apply {
+                flags = flags or Notification.FLAG_INSISTENT
+            }
+
+        try {
+            getSystemService(NotificationManager::class.java)
+                ?.notify(ALERT_NOTIFICATION_ID, alertNotification)
+        } catch (e: SecurityException) {
+            Log.w(TAG, "Missing POST_NOTIFICATIONS permission", e)
+        }
+
+        Push.setIncomingCallServiceActive(this, true)
+        isForegroundStarted = true
+        Log.d(TAG, "Incoming call foreground started; alert notification posted separately")
+    }
 
     private fun openAppPendingIntent(): PendingIntent {
         val launchIntent = Intent(this, MainActivity::class.java).apply {
@@ -144,21 +178,54 @@ class IncomingCallNotificationService : Service() {
         )
     }
 
-    private fun createNotificationChannel() {
-        val channel = NotificationChannel(
-            CHANNEL_ID,
+    private fun createNotificationChannels() {
+        val manager = getSystemService(NotificationManager::class.java) ?: return
+
+        // 前台服务渠道：低优先级、无声
+        val fgsChannel = NotificationChannel(
+            FGS_CHANNEL_ID,
+            getString(R.string.Incoming_call_notification_channel_name),
+            NotificationManager.IMPORTANCE_LOW
+        ).apply {
+            description = getString(R.string.Incoming_call_notification_channel_description)
+            setSound(null, null)
+            enableVibration(false)
+            setShowBadge(false)
+        }
+        manager.createNotificationChannel(fgsChannel)
+
+        // 来电铃声渠道：高优先级 + 系统铃声（USAGE_NOTIFICATION_RINGTONE）+ 震动
+        val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+            ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+        val ringAttrs = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build()
+        val ringChannel = NotificationChannel(
+            RING_CHANNEL_ID,
             getString(R.string.Incoming_call_notification_channel_name),
             NotificationManager.IMPORTANCE_HIGH
         ).apply {
             description = getString(R.string.Incoming_call_notification_channel_description)
+            setSound(ringtoneUri, ringAttrs)
             enableVibration(true)
             setShowBadge(true)
+            setBypassDnd(false)
         }
-        val manager = getSystemService(NotificationManager::class.java)
-        manager?.createNotificationChannel(channel)
+        manager.createNotificationChannel(ringChannel)
+
+        // 清理旧渠道，避免设置页里出现重复项
+        try {
+            manager.deleteNotificationChannel(CHANNEL_ID)
+        } catch (_: Exception) {
+        }
     }
 
     override fun onDestroy() {
+        try {
+            getSystemService(NotificationManager::class.java)?.cancel(ALERT_NOTIFICATION_ID)
+        } catch (_: Exception) {
+        }
         if (isForegroundStarted) {
             stopForeground(STOP_FOREGROUND_REMOVE)
             isForegroundStarted = false

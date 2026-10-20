@@ -71,7 +71,7 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            signingConfig = if (System.getenv("ALIAS") != null) {
+            signingConfig = if (!System.getenv("ALIAS").isNullOrBlank()) {
                 signingConfigs.getByName("release")
             } else {
                 signingConfigs.getByName("debug")

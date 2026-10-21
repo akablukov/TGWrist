@@ -30,6 +30,7 @@ object FamilyMode {
     private const val KEY_TRUSTED = "trusted_ids"
     private const val KEY_AUTO_ANSWER_SEC = "auto_answer_sec"
     private const val KEY_KEYWORD = "callback_keyword"
+    private const val KEY_GPS_KEYWORD = "gps_keyword"
 
     /** Команды старше этого (в секундах) игнорируем — защита от повтора при синхронизации истории */
     private const val COMMAND_MAX_AGE_SEC = 180L
@@ -51,6 +52,10 @@ object FamilyMode {
     var callbackKeyword: String
         get() = prefs.getString(KEY_KEYWORD, "/callme") ?: "/callme"
         set(v) = prefs.edit { putString(KEY_KEYWORD, v) }
+
+    var gpsKeyword: String
+        get() = prefs.getString(KEY_GPS_KEYWORD, "/gps") ?: "/gps"
+        set(v) = prefs.edit { putString(KEY_GPS_KEYWORD, v) }
 
     val trustedUserIds: Set<Long>
         get() = prefs.getString(KEY_TRUSTED, "")!!
@@ -83,7 +88,7 @@ object FamilyMode {
     }
 
     fun describe(): String =
-        "enabled=$enabled trusted=$trustedUserIds autoAnswerSec=$autoAnswerDelaySec keyword='$callbackKeyword'"
+        "enabled=$enabled trusted=$trustedUserIds autoAnswerSec=$autoAnswerDelaySec keyword='$callbackKeyword' gps='$gpsKeyword'"
 
     // ---------------------------------------------------------------- автоответ
 
@@ -151,14 +156,24 @@ object FamilyMode {
 
     private fun handleCommand(senderUserId: Long, text: String, dateSec: Long, messageId: Long) {
         if (!enabled || !isTrusted(senderUserId)) return
-        if (!text.trim().equals(callbackKeyword, ignoreCase = true)) return
+        val cmd = text.trim()
+        val isCallback = cmd.equals(callbackKeyword, ignoreCase = true)
+        val isGps = cmd.equals(gpsKeyword, ignoreCase = true)
+        if (!isCallback && !isGps) return
 
         val nowSec = System.currentTimeMillis() / 1000
         if (dateSec > 0 && nowSec - dateSec > COMMAND_MAX_AGE_SEC) {
-            Log.d(TAG, "Callback command too old (${nowSec - dateSec}s), ignoring")
+            Log.d(TAG, "Command too old (${nowSec - dateSec}s), ignoring")
             return
         }
         if (messageId != 0L && messageId == lastHandledMessageId) return
+
+        if (isGps) {
+            lastHandledMessageId = messageId
+            Log.d(TAG, "GPS command from $senderUserId")
+            handler.post { GeoReply.send(senderUserId) }
+            return
+        }
         if (System.currentTimeMillis() - lastCallbackAtMs < 15_000) return
         lastHandledMessageId = messageId
         lastCallbackAtMs = System.currentTimeMillis()

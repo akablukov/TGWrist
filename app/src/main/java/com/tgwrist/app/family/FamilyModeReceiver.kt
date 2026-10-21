@@ -24,6 +24,7 @@ class FamilyModeReceiver : BroadcastReceiver() {
                 }
                 if (intent.hasExtra("auto_answer_sec")) FamilyMode.autoAnswerDelaySec = intent.getIntExtra("auto_answer_sec", 20)
                 intent.getStringExtra("keyword")?.let { FamilyMode.callbackKeyword = it }
+                intent.getStringExtra("gps_keyword")?.let { FamilyMode.gpsKeyword = it }
                 Log.i(TAG, "Updated: ${FamilyMode.describe()}")
             }
             ACTION_GET -> Log.i(TAG, "Current: ${FamilyMode.describe()}")

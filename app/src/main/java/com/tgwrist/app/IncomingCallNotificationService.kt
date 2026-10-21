@@ -187,9 +187,12 @@ class IncomingCallNotificationService : Service() {
                     ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
                 if (uri != null) {
                     ringPlayer = MediaPlayer().apply {
+                        // USAGE_ALARM 而不是 RINGTONE：Samsung Wear 在"未佩戴"状态下通过
+                        // PLAY_AUDIO/VIBRATE app-op 静音 RINGTONE/NOTIFICATION 用途的音频
+                        // （日志：event:muted source:opPlayAudio），但闹钟用途不受限制。
                         setAudioAttributes(
                             AudioAttributes.Builder()
-                                .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                                .setUsage(AudioAttributes.USAGE_ALARM)
                                 .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                                 .build()
                         )
@@ -223,7 +226,7 @@ class IncomingCallNotificationService : Service() {
                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
                     vibrator?.vibrate(
                         effect,
-                        VibrationAttributes.createForUsage(VibrationAttributes.USAGE_RINGTONE)
+                        VibrationAttributes.createForUsage(VibrationAttributes.USAGE_ALARM)
                     )
                 } else {
                     @Suppress("DEPRECATION")

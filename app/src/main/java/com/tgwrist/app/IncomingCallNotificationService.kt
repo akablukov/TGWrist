@@ -8,7 +8,13 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.media.AudioAttributes
+import android.media.AudioManager
+import android.media.MediaPlayer
 import android.media.RingtoneManager
+import android.os.VibrationAttributes
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -73,6 +79,8 @@ class IncomingCallNotificationService : Service() {
     }
 
     private var isForegroundStarted = false
+    private var ringPlayer: MediaPlayer? = null
+    private var vibrator: Vibrator? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -146,10 +154,10 @@ class IncomingCallNotificationService : Service() {
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setFullScreenIntent(openAppPendingIntent(), true)
+            // 铃声 / 震动由本服务自己播放（见 startRinging），不依赖 Wear 的通知提醒管线
+            // （该管线在"未佩戴"时会静默所有通知）。
+            .setSilent(true)
             .build()
-            .apply {
-                flags = flags or Notification.FLAG_INSISTENT
-            }
 
         try {
             getSystemService(NotificationManager::class.java)
@@ -158,9 +166,90 @@ class IncomingCallNotificationService : Service() {
             Log.w(TAG, "Missing POST_NOTIFICATIONS permission", e)
         }
 
+        startRinging()
+
         Push.setIncomingCallServiceActive(this, true)
         isForegroundStarted = true
         Log.d(TAG, "Incoming call foreground started; alert notification posted separately")
+    }
+
+    /**
+     * 自己播放铃声 + 循环震动。
+     * 遵守系统响铃模式：静音 → 不响不震；仅震动 → 只震动；正常 → 铃声 + 震动。
+     */
+    private fun startRinging() {
+        val audioManager = getSystemService(AudioManager::class.java)
+        val ringerMode = audioManager?.ringerMode ?: AudioManager.RINGER_MODE_NORMAL
+
+        if (ringerMode == AudioManager.RINGER_MODE_NORMAL) {
+            try {
+                val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+                    ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+                if (uri != null) {
+                    ringPlayer = MediaPlayer().apply {
+                        setAudioAttributes(
+                            AudioAttributes.Builder()
+                                .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                                .build()
+                        )
+                        setDataSource(this@IncomingCallNotificationService, uri)
+                        isLooping = true
+                        setOnErrorListener { _, what, extra ->
+                            Log.w(TAG, "Ringtone error $what/$extra")
+                            true
+                        }
+                        prepare()
+                        start()
+                    }
+                    Log.d(TAG, "Ringtone started")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to start ringtone", e)
+                ringPlayer?.release()
+                ringPlayer = null
+            }
+        }
+
+        if (ringerMode != AudioManager.RINGER_MODE_SILENT) {
+            try {
+                vibrator = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                    getSystemService(VibratorManager::class.java)?.defaultVibrator
+                } else {
+                    @Suppress("DEPRECATION")
+                    getSystemService(Vibrator::class.java)
+                }
+                val effect = VibrationEffect.createWaveform(longArrayOf(0, 700, 500, 700, 1200), 0)
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                    vibrator?.vibrate(
+                        effect,
+                        VibrationAttributes.createForUsage(VibrationAttributes.USAGE_RINGTONE)
+                    )
+                } else {
+                    @Suppress("DEPRECATION")
+                    vibrator?.vibrate(effect)
+                }
+                Log.d(TAG, "Vibration started")
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to start vibration", e)
+            }
+        }
+    }
+
+    private fun stopRinging() {
+        try {
+            ringPlayer?.let {
+                if (it.isPlaying) it.stop()
+                it.release()
+            }
+        } catch (_: Exception) {
+        }
+        ringPlayer = null
+        try {
+            vibrator?.cancel()
+        } catch (_: Exception) {
+        }
+        vibrator = null
     }
 
     private fun openAppPendingIntent(): PendingIntent {
@@ -222,6 +311,7 @@ class IncomingCallNotificationService : Service() {
     }
 
     override fun onDestroy() {
+        stopRinging()
         try {
             getSystemService(NotificationManager::class.java)?.cancel(ALERT_NOTIFICATION_ID)
         } catch (_: Exception) {

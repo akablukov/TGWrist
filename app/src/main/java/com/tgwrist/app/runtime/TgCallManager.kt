@@ -640,6 +640,8 @@ object TgCallManager {
                 )
             }
             GlobalEventBus.send(OPEN_CALL_PAGE)
+            // Семейный режим: автоответ на звонок доверенного пользователя
+            com.tgwrist.app.family.FamilyMode.onIncomingCall(call.userId)
             return
         }
 

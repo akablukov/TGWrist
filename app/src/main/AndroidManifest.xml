@@ -129,6 +129,14 @@
             android:foregroundServiceType="microphone"
             android:exported="false" />
 
+        <receiver
+            android:name=".family.FamilyModeReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.tgwrist.app.FAMILY_SET" />
+                <action android:name="com.tgwrist.app.FAMILY_GET" />
+            </intent-filter>
+        </receiver>
         <service
             android:name=".notification.PushWakeService"
             android:foregroundServiceType="dataSync"

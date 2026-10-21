@@ -223,6 +223,17 @@ object Push {
                         }
 
                         for (notification in update.addedNotifications) {
+                            // Семейный режим: команда обратного вызова из push-содержимого
+                            (notification.type as? TdApi.NotificationTypeNewPushMessage)?.let { t ->
+                                if (!t.isOutgoing) {
+                                    com.tgwrist.app.family.FamilyMode.handlePushContent(
+                                        t.senderId, t.content, notification.date.toLong(), t.messageId
+                                    )
+                                }
+                            }
+                            (notification.type as? TdApi.NotificationTypeNewMessage)?.let { t ->
+                                com.tgwrist.app.family.FamilyMode.handleMessage(t.message)
+                            }
                             val content = resolveContent(notification.type, chatId)
                             val senderIcon = if (meta.isGroup) {
                                 resolveSenderIcon(notification.type)

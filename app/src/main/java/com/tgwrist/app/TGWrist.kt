@@ -48,6 +48,7 @@ class TGWrist : Application(), LifecycleObserver {
         Config.init(this) // 初始化 Config
         Push.init() // 初始化消息通知全局单例
         TgCallManager.init() // 初始化通话管理器
+        com.tgwrist.app.family.FamilyMode.init(this) // Семейный режим (автоответ / обратный вызов)
 
         try {
             VoIP.initialize(applicationContext)

@@ -21,8 +21,8 @@ android {
         applicationId = "com.tgwrist.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 41
-        versionName = "4.1.1-family"
+        versionCode = 42
+        versionName = "4.1.2-family"
     }
 
     flavorDimensions += "abi"

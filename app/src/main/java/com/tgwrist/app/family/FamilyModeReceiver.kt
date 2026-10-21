@@ -6,9 +6,9 @@ import android.content.Intent
 import android.util.Log
 
 /**
- * Настройка семейного режима через adb (receiver не экспортирован, но
- * `adb shell am broadcast -n com.tgwrist.app/.family.FamilyModeReceiver ...`
- * из shell доставляется):
+ * Настройка семейного режима через adb (receiver экспортирован под
+ * android.permission.DUMP — слать может только shell/система):
+ *   adb shell am broadcast -n com.tgwrist.app/.family.FamilyModeReceiver \
  *
  *   -a com.tgwrist.app.FAMILY_SET --ez enabled true \
  *       --es trusted "123456789,987654321" --ei auto_answer_sec 20 --es keyword "/callme"

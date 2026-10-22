@@ -21,6 +21,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * Ответ на команду /gps: отправляет доверенному пользователю геометку Telegram
  * (нативное сообщение-локация) и строку с точностью, источником и зарядом.
+ *
+ * Для работы из фона (push) нужен ACCESS_BACKGROUND_LOCATION — без него
+ * getCurrentLocation из сервиса, стартовавшего из фона, возвращает null.
  */
 object GeoReply {
     private const val TAG = "GeoReply"
@@ -29,10 +32,12 @@ object GeoReply {
     private val executor = Executors.newSingleThreadExecutor()
     private val handler = Handler(Looper.getMainLooper())
 
-    fun send(toUserId: Long) {
+    /** [onDone] вызывается, когда ответ сформирован и передан TDLib на отправку */
+    fun send(toUserId: Long, onDone: () -> Unit = {}) {
         val ctx = TGWrist.context
         if (!hasPermission(ctx)) {
             sendText(toUserId, "📍 Нет разрешения на геолокацию на часах")
+            onDone()
             return
         }
         val lm = ctx.getSystemService(Context.LOCATION_SERVICE) as LocationManager
@@ -42,20 +47,24 @@ object GeoReply {
         fun deliver(loc: Location?, source: String) {
             if (!done.compareAndSet(false, true)) return
             cancel.cancel()
-            if (loc == null) {
-                sendText(toUserId, "📍 Не удалось определить координаты (нет GPS/сети), заряд ${battery(ctx)}%")
-                return
+            try {
+                if (loc == null) {
+                    sendText(toUserId, "📍 Не удалось определить координаты (нет GPS/сети), заряд ${battery(ctx)}%")
+                } else {
+                    sendLocation(toUserId, loc)
+                    val ageSec = (System.currentTimeMillis() - loc.time) / 1000
+                    val txt = buildString {
+                        append("📍 ±").append(loc.accuracy.toInt()).append(" м, ").append(source)
+                        if (ageSec > 60) append(", данные ${ageSec / 60} мин назад")
+                        append(", 🔋 ").append(battery(ctx)).append('%')
+                        append("\nhttps://maps.google.com/?q=")
+                            .append(String.format(java.util.Locale.US, "%.6f,%.6f", loc.latitude, loc.longitude))
+                    }
+                    sendText(toUserId, txt)
+                }
+            } finally {
+                onDone()
             }
-            sendLocation(toUserId, loc)
-            val ageSec = (System.currentTimeMillis() - loc.time) / 1000
-            val txt = buildString {
-                append("📍 ±").append(loc.accuracy.toInt()).append(" м, ").append(source)
-                if (ageSec > 60) append(", данные ${ageSec / 60} мин назад")
-                append(", 🔋 ").append(battery(ctx)).append('%')
-                append("\nhttps://maps.google.com/?q=")
-                    .append(String.format(java.util.Locale.US, "%.6f,%.6f", loc.latitude, loc.longitude))
-            }
-            sendText(toUserId, txt)
         }
 
         try {
@@ -70,7 +79,10 @@ object GeoReply {
                 var best: Location? = null
                 for (p in providers) {
                     lm.getCurrentLocation(p, cancel, executor) { loc ->
-                        if (loc == null) return@getCurrentLocation
+                        if (loc == null) {
+                            Log.d(TAG, "getCurrentLocation($p) -> null")
+                            return@getCurrentLocation
+                        }
                         if (p == LocationManager.GPS_PROVIDER || loc.accuracy <= 50f) {
                             deliver(loc, if (p == LocationManager.GPS_PROVIDER) "GPS" else "сеть")
                         } else if (best == null || loc.accuracy < best!!.accuracy) {
@@ -114,6 +126,7 @@ object GeoReply {
         )
         TgClient.send(TdApi.SendMessage(chatId, null, null, null, null, content)) { r ->
             if (r is TdApi.Error) Log.w(TAG, "SendMessage(location) failed: $r")
+            if (r is TdApi.Message) FamilyMode.trackSend(r.id)
         }
     }
 
@@ -121,6 +134,7 @@ object GeoReply {
         val content = TdApi.InputMessageText().apply { this.text = TdApi.FormattedText(text, null) }
         TgClient.send(TdApi.SendMessage(chatId, null, null, null, null, content)) { r ->
             if (r is TdApi.Error) Log.w(TAG, "SendMessage(text) failed: $r")
+            if (r is TdApi.Message) FamilyMode.trackSend(r.id)
         }
     }
 }

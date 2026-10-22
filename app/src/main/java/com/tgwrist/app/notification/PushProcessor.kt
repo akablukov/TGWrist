@@ -5,6 +5,8 @@ import android.util.Log
 import com.tgwrist.app.TGWrist
 import com.tgwrist.app.runtime.CALL_STATE_NONE
 import com.tgwrist.app.runtime.Config
+import com.tgwrist.app.family.FamilyMode
+import com.tgwrist.app.runtime.TdNetwork
 import com.tgwrist.app.runtime.TgCallManager
 import com.tgwrist.app.runtime.TgClient
 import com.tgwrist.app.runtime.UserManager
@@ -37,6 +39,17 @@ object PushProcessor {
     private val INCOMING_CALL_GRACE: Duration = 30.seconds
 
     /**
+     * Сколько ждать подключения TDLib к серверам. На LTE после простоя радио
+     * соединение занимало 17–20+ с (логи 22.10: Connecting в 08:31:53, Ready
+     * так и не наступил за 20 с; следующий push — Ready через 17 с).
+     */
+    private val CONNECT_TIMEOUT: Duration = 45.seconds
+    /** После Ready: сколько ждать UpdateCall, если push был про звонок (406) */
+    private val AFTER_READY_CALL_GRACE: Duration = 8.seconds
+    /** Максимум удерживать сервис ради незавершённой фоновой работы (/gps и т.п.) */
+    private val PENDING_WORK_MAX: Duration = 90.seconds
+
+    /**
      * 处理一条推送。返回 true 表示已处理（成功或无需处理），false 表示失败。
      * 内部会在通话期间阻塞，直到通话结束（或超时），以保持 TgClient 存活。
      */
@@ -45,6 +58,9 @@ object PushProcessor {
         if (fcmData.isBlank()) return true
 
         TgClient.init()
+        // Сообщить TDLib актуальный тип сети: после ухода с Wi‑Fi на LTE он иначе
+        // может часами висеть в Connecting на мёртвом сокете.
+        TdNetwork.push(TGWrist.context)
         try {
             val pushReceiverId = suspendTdRequest<TdApi.PushReceiverId>(
                 TdApi.GetPushReceiverId(fcmData)
@@ -72,16 +88,21 @@ object PushProcessor {
                 processResult is TdApi.Ok -> {
                     Log.d(TAG, "Push notification processed successfully")
                     delay(3000.milliseconds)
+                    awaitPendingWork()
                     true
                 }
                 processResult is TdApi.Error && processResult.code == 406 -> {
                     // TDLib 无法本地处理，等待服务器更新（含来电 UpdateCall）
-                    delay(20000.milliseconds)
+                    val ready = awaitConnected()
+                    Log.d(TAG, "406: connected=$ready, waiting for server updates")
+                    delay(if (ready) AFTER_READY_CALL_GRACE else 5.seconds)
+                    awaitPendingWork()
                     true
                 }
                 else -> {
                     Log.e(TAG, "ProcessPushNotification failed: $processResult")
-                    delay(20000.milliseconds)
+                    awaitConnected()
+                    delay(5.seconds)
                     false
                 }
             }
@@ -98,6 +119,34 @@ object PushProcessor {
                 Log.e(TAG, "Failed to close TgClient", closeError)
             }
         }
+    }
+
+    /** Ждёт ConnectionStateReady/Updating до CONNECT_TIMEOUT. true — подключились. */
+    private suspend fun awaitConnected(): Boolean {
+        val start = SystemClock.elapsedRealtime()
+        while (SystemClock.elapsedRealtime() - start < CONNECT_TIMEOUT.inWholeMilliseconds) {
+            val st = Config.connectionState.value
+            if (st == Config.ConnectionState.Ready || st == Config.ConnectionState.Updating) return true
+            if (TgCallManager.callState.value != CALL_STATE_NONE) return true
+            delay(500.milliseconds)
+        }
+        Log.w(TAG, "TDLib not connected after ${CONNECT_TIMEOUT.inWholeSeconds}s (state=${Config.connectionState.value})")
+        return false
+    }
+
+    /** Держит сервис, пока семейный режим не закончит фоновую работу (ответ на /gps и т.п.). */
+    private suspend fun awaitPendingWork() {
+        if (!FamilyMode.hasPendingWork()) return
+        Log.d(TAG, "Holding for pending family work")
+        val start = SystemClock.elapsedRealtime()
+        // Для отправки ответа нужно живое соединение
+        awaitConnected()
+        while (FamilyMode.hasPendingWork() &&
+            SystemClock.elapsedRealtime() - start < PENDING_WORK_MAX.inWholeMilliseconds
+        ) {
+            delay(1.seconds)
+        }
+        Log.d(TAG, "Pending family work done=${!FamilyMode.hasPendingWork()} after ${SystemClock.elapsedRealtime() - start}ms")
     }
 
     private suspend fun awaitCallSafely(startedAt: Long) {

@@ -49,6 +49,7 @@ class TGWrist : Application(), LifecycleObserver {
         Push.init() // 初始化消息通知全局单例
         TgCallManager.init() // 初始化通话管理器
         com.tgwrist.app.family.FamilyMode.init(this) // Семейный режим (автоответ / обратный вызов)
+        com.tgwrist.app.runtime.TdNetwork.register(this) // Wi‑Fi ↔ LTE → TdApi.SetNetworkType
 
         try {
             VoIP.initialize(applicationContext)

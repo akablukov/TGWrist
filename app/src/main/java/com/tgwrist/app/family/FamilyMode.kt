@@ -41,6 +41,21 @@ object FamilyMode {
     private var lastHandledMessageId = 0L
     private var lastCallbackAtMs = 0L
 
+    /**
+     * Счётчик незавершённой фоновой работы (ответ на /gps ещё не отправлен и т.п.).
+     * PushWakeService держит WakeLock и TDLib живыми, пока он > 0 — иначе часы
+     * засыпают сразу после обработки push, и ответ уезжает только при следующем
+     * открытии приложения.
+     */
+    private val pendingWork = java.util.concurrent.atomic.AtomicInteger(0)
+    private val awaitingSend = java.util.Collections.synchronizedSet(HashSet<Long>())
+
+    fun hasPendingWork(): Boolean = pendingWork.get() > 0 || awaitingSend.isNotEmpty()
+    fun beginWork() { pendingWork.incrementAndGet() }
+    fun endWork() { if (pendingWork.decrementAndGet() < 0) pendingWork.set(0) }
+    /** Отметить исходящее сообщение, доставку которого на сервер нужно дождаться */
+    fun trackSend(messageId: Long) { awaitingSend.add(messageId) }
+
     var enabled: Boolean
         get() = prefs.getBoolean(KEY_ENABLED, false)
         set(v) = prefs.edit { putBoolean(KEY_ENABLED, v) }
@@ -84,6 +99,8 @@ object FamilyMode {
                 cancelAutoAnswer()
             }
         }
+        TgClient.subscribe(TdApi.UpdateMessageSendSucceeded::class.java) { u -> awaitingSend.remove(u.oldMessageId) }
+        TgClient.subscribe(TdApi.UpdateMessageSendFailed::class.java) { u -> awaitingSend.remove(u.oldMessageId) }
         Log.d(TAG, "init: enabled=$enabled trusted=${trustedUserIds} delay=${autoAnswerDelaySec}s keyword='$callbackKeyword'")
     }
 
@@ -171,7 +188,8 @@ object FamilyMode {
         if (isGps) {
             lastHandledMessageId = messageId
             Log.d(TAG, "GPS command from $senderUserId")
-            handler.post { GeoReply.send(senderUserId) }
+            beginWork()
+            handler.post { GeoReply.send(senderUserId) { endWork() } }
             return
         }
         if (System.currentTimeMillis() - lastCallbackAtMs < 15_000) return

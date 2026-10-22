@@ -50,6 +50,8 @@ class IncomingCallNotificationService : Service() {
         const val ACTION_STOP  = "com.tgwrist.app.action.INCOMING_CALL_STOP"
         const val EXTRA_TITLE  = "incoming_call_title"
         const val EXTRA_TEXT   = "incoming_call_text"
+        /** true — только поднять экран, без мелодии и вибрации (исходящий обратный вызов) */
+        const val EXTRA_SILENT = "incoming_call_silent"
 
         /** 前台服务通知（静默，带绿标） */
         const val NOTIFICATION_ID = 1003
@@ -61,11 +63,12 @@ class IncomingCallNotificationService : Service() {
         const val FGS_CHANNEL_ID    = "tg_wear_incoming_call_fgs"
         const val RING_CHANNEL_ID   = "tg_wear_incoming_call_ring"
 
-        fun start(context: Context, title: String, text: String) {
+        fun start(context: Context, title: String, text: String, silent: Boolean = false) {
             val intent = Intent(context, IncomingCallNotificationService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_TITLE, title)
                 putExtra(EXTRA_TEXT, text)
+                putExtra(EXTRA_SILENT, silent)
             }
             ContextCompat.startForegroundService(context, intent)
         }
@@ -79,6 +82,7 @@ class IncomingCallNotificationService : Service() {
     }
 
     private var isForegroundStarted = false
+    private var silentMode = false
     private var ringPlayer: MediaPlayer? = null
     private var vibrator: Vibrator? = null
 
@@ -94,6 +98,7 @@ class IncomingCallNotificationService : Service() {
                     ?: getString(R.string.Call_notification_default_title)
                 val text = intent.getStringExtra(EXTRA_TEXT)
                     ?: getString(R.string.Call_incoming_open_app)
+                silentMode = intent.getBooleanExtra(EXTRA_SILENT, false)
                 ensureForeground(title, text)
             }
             ACTION_STOP -> {
@@ -166,7 +171,7 @@ class IncomingCallNotificationService : Service() {
             Log.w(TAG, "Missing POST_NOTIFICATIONS permission", e)
         }
 
-        startRinging()
+        if (!silentMode) startRinging() else Log.d(TAG, "Silent mode: no ring/vibrate")
 
         Push.setIncomingCallServiceActive(this, true)
         isForegroundStarted = true

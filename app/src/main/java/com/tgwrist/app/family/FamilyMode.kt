@@ -56,6 +56,39 @@ object FamilyMode {
     /** Отметить исходящее сообщение, доставку которого на сервер нужно дождаться */
     fun trackSend(messageId: Long) { awaitingSend.add(messageId) }
 
+    /**
+     * Удалить сообщение только на часах (revoke=false — у отправителя оно остаётся),
+     * чтобы команды и ответы не засоряли чат ребёнка. Пока TDLib офлайн, GetMessage
+     * может не находить сообщение из push — повторяем до ~45 с.
+     */
+    fun deleteLocally(chatId: Long, messageId: Long) {
+        if (messageId == 0L || chatId == 0L) return
+        beginWork()
+        var attempt = 0
+        lateinit var tryDelete: () -> Unit
+        fun retryOrGiveUp(what: String, err: TdApi.Object) {
+            if (++attempt < 15) {
+                handler.postDelayed({ tryDelete() }, 3000L)
+            } else {
+                Log.w(TAG, "$what failed for $chatId/$messageId: $err — giving up")
+                endWork()
+            }
+        }
+        tryDelete = {
+            TgClient.send(TdApi.GetMessage(chatId, messageId)) { r ->
+                if (r is TdApi.Message) {
+                    TgClient.send(TdApi.DeleteMessages(chatId, longArrayOf(messageId), false)) { d ->
+                        if (d is TdApi.Ok) {
+                            Log.d(TAG, "Deleted locally $chatId/$messageId")
+                            endWork()
+                        } else retryOrGiveUp("DeleteMessages", d)
+                    }
+                } else retryOrGiveUp("GetMessage", r)
+            }
+        }
+        tryDelete()
+    }
+
     var enabled: Boolean
         get() = prefs.getBoolean(KEY_ENABLED, false)
         set(v) = prefs.edit { putBoolean(KEY_ENABLED, v) }
@@ -99,7 +132,10 @@ object FamilyMode {
                 cancelAutoAnswer()
             }
         }
-        TgClient.subscribe(TdApi.UpdateMessageSendSucceeded::class.java) { u -> awaitingSend.remove(u.oldMessageId) }
+        TgClient.subscribe(TdApi.UpdateMessageSendSucceeded::class.java) { u ->
+            // Ответ (/gps) ушёл на сервер — убираем его из чата на часах, чтобы не засорять
+            if (awaitingSend.remove(u.oldMessageId)) deleteLocally(u.message.chatId, u.message.id)
+        }
         TgClient.subscribe(TdApi.UpdateMessageSendFailed::class.java) { u -> awaitingSend.remove(u.oldMessageId) }
         Log.d(TAG, "init: enabled=$enabled trusted=${trustedUserIds} delay=${autoAnswerDelaySec}s keyword='$callbackKeyword'")
     }
@@ -185,6 +221,9 @@ object FamilyMode {
         }
         if (messageId != 0L && messageId == lastHandledMessageId) return
 
+        // Команду убираем из чата на часах (у отправителя остаётся)
+        handler.post { deleteLocally(senderUserId, messageId) }
+
         if (isGps) {
             lastHandledMessageId = messageId
             Log.d(TAG, "GPS command from $senderUserId")
@@ -206,10 +245,12 @@ object FamilyMode {
             // единственный надёжный способ показать Activity из фона), затем звоним.
             try {
                 val ctx = com.tgwrist.app.TGWrist.context
+                // silent=true: экран поднимаем, но без мелодии и вибрации — это исходящий
                 com.tgwrist.app.IncomingCallNotificationService.start(
                     ctx,
                     ctx.getString(com.tgwrist.app.R.string.Call),
                     callbackKeyword,
+                    silent = true,
                 )
             } catch (e: Exception) {
                 Log.w(TAG, "IncomingCallNotificationService.start failed: ${e.message}")
